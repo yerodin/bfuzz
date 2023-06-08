@@ -1,22 +1,16 @@
 extern crate clap;
-use tokio::time::timeout;
 use clap::{arg, value_parser, Arg, ArgAction};
 use futures::stream::FuturesUnordered;
-use std::fmt::format;
 use std::path::PathBuf;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle, ProgressDrawTarget};
 use colored::Colorize;
 use tokio::net::TcpStream;
 use tokio::io::AsyncWriteExt;
 use tokio::io::{AsyncReadExt};
 use tokio::fs::File;
 use tokio::io::BufReader;
-use tokio::io::AsyncSeekExt;
-use tokio::task;
-use tokio::io::SeekFrom;
 use tokio::io::AsyncBufReadExt;
 use futures::StreamExt;
-use tokio::io::Error;
 
 async fn escape_ignores(mut ignore_values: Vec<&String>) -> Vec<String> {
     let mut new_values: Vec<String> = Vec::new();
@@ -49,6 +43,7 @@ async fn scan_addr(
             Ok(_) => {}
             Err(e) => {
                 err = e;
+                continue;
             }
         };
         let mut buf = vec![0u8; 1024];
@@ -102,7 +97,9 @@ async fn fuzz(
 
     pb.println(format!("Target          : {}", sock_addr.green().yellow()));
     pb.println(format!("Wordlist Size   : {}", count_lines.to_string().yellow()));
-    pb.println(format!("Batch Size      : {}\n\n", batch_size.to_string().yellow()));
+    pb.println(format!("Batch Size      : {}", batch_size.to_string().yellow()));
+    pb.println(format!("Timeout         : {}ms\n\n", timeout.to_string().yellow()));
+
     for _ in 0..*batch_size {
         if let Some(line) = lines.next_line().await.unwrap() {
             let s = scan_addr(
@@ -212,7 +209,7 @@ Blazing Fast Basic Port Fuzzer"#;
             .short('T')
             .help("How long to wait for responses in milliseconds")
             .value_name("MS")
-            .default_value("100")
+            .default_value("250")
             .value_parser(value_parser!(u32))
     );
     
