@@ -3,7 +3,9 @@ use clap::{arg, value_parser, Arg, ArgAction};
 use colored::Colorize;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use indicatif::MultiProgress;
 use indicatif::ProgressBar;
+use indicatif::ProgressStyle;
 use regex::Regex;
 use std::path::PathBuf;
 use tokio::fs::File;
@@ -12,6 +14,8 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::net::TcpStream;
+use tokio::time::Duration;
+use tokio::time::sleep;
 
 async fn escape_ignores(mut ignore_values: Vec<&String>) -> Vec<String> {
     let mut new_values: Vec<String> = Vec::new();
@@ -46,7 +50,17 @@ async fn scan_addr(
 ) -> Result<(String, String), tokio::io::Error> {
     let mut err: tokio::io::Error = tokio::io::Error::new(std::io::ErrorKind::Other, "");
     for _ in 0..retries {
-        let mut stream = TcpStream::connect(addr).await.expect("Could Not Connect");
+        let mut stream: TcpStream;
+        match TcpStream::connect(addr).await {
+            Ok(s) => {
+                stream = s;
+                sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => {
+                err = e;
+                continue;
+            }
+        };
         let mut fuzz_string = fuzz_data.to_string();
         if new_lines {
             fuzz_string = fuzz_string + "\n";
@@ -77,6 +91,7 @@ async fn scan_addr(
             }
             Err(e) => {
                 err = e.into();
+                sleep(Duration::from_millis(100)).await;
             }
         };
         // match stream.read(&mut buf).await {
@@ -106,14 +121,21 @@ async fn fuzz(
         .expect("error getting wordlist info");
     let count_lines = wordlist_info.0;
     let max_length = wordlist_info.1;
-    let pb = ProgressBar::new(count_lines);
+    let mb = MultiProgress::new();
+    
+    let pb_style = ProgressStyle::with_template("\n{prefix}{wide_bar} {pos}/{len}").unwrap();
+    let pb = mb.add(ProgressBar::new(count_lines).with_style(pb_style));
+    let status_style = ProgressStyle::with_template("{msg}").unwrap().tick_chars("-/+\\");
+    let sb = mb.add(ProgressBar::new(count_lines).with_style(status_style));
+    sb.set_message(format!("Timeouts: {}      Errors: {}", "0".yellow(), "0".red()));
     let sock_addr: &str = &(target.to_string() + ":" + &port.to_string());
     let mut timeouts: u64 = 0;
+    let mut errors: u64 = 0;
 
     let mut lines = BufReader::new(File::open(wordlist).await.unwrap()).lines();
     let mut async_futures = FuturesUnordered::new();
     let mut done: i64 = 0;
-
+    let mut first_progress_print = true;
     pb.println(format!("Target          : {}", sock_addr.green().yellow()));
     pb.println(format!(
         "Wordlist Size   : {}",
@@ -124,8 +146,9 @@ async fn fuzz(
         batch_size.to_string().yellow()
     ));
     pb.println(format!(
-        "Timeout         : {}ms\n\n",
-        timeout.to_string().yellow()
+        "Timeout         : {}{}",
+        timeout.to_string().yellow(),
+        "ms".yellow()
     ));
 
     for _ in 0..*batch_size {
@@ -158,8 +181,13 @@ async fn fuzz(
                         filler_count = 0;
                     }
                     let filler_string = " ".repeat(filler_count as usize);
+                    let mut newline ="";
+                    if first_progress_print {
+                        first_progress_print = false;
+                        newline ="\n";
+                    }
                     pb.println(format!(
-                        "[{}]: {}{}Response: [{}]",
+                        "{}[{}]: {}{}Response: [{}]", newline,
                         "FOUND!".green(),
                         escape_for_print(payload_string),
                         filler_string,
@@ -174,13 +202,14 @@ async fn fuzz(
                     timeouts = timeouts + 1;
                     // pb.println(format!("[{}] Payload: [{}]","TIMEOUT".bright_yellow(), e.to_string()));
                 } else {
-                    pb.println(format!("[{}] Payload: [{}]", "ERROR".red(), e.to_string()));
-                    pb.println(format!("{}","Maybe the server cannot handle this amount of requests. Try with smaller batch size --batch-size SIZE".red()));
+                    errors = errors + 1;
+                    // pb.println(format!("[{}] Payload: [{}]", "ERROR".red(), e.to_string()));
+                    // pb.println(format!("{}","Maybe the server cannot handle this amount of requests. Try with smaller batch size --batch-size SIZE".red()));
                 }
             }
         }
+        sb.set_message(format!("Timeouts: {}      Errors: {}", timeouts.to_string().yellow(), errors.to_string().red()));
     }
-    pb.finish_with_message("done");
     println!("\n\n[{}]", "DONE!".bright_green());
 }
 
