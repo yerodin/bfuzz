@@ -1,27 +1,40 @@
 extern crate clap;
 use clap::{arg, value_parser, Arg, ArgAction};
-use futures::stream::FuturesUnordered;
-use std::path::PathBuf;
-use indicatif::{ProgressBar, ProgressStyle, ProgressDrawTarget};
 use colored::Colorize;
-use tokio::net::TcpStream;
-use tokio::io::AsyncWriteExt;
-use tokio::io::{AsyncReadExt};
-use tokio::fs::File;
-use tokio::io::BufReader;
-use tokio::io::AsyncBufReadExt;
+use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use indicatif::ProgressBar;
+use regex::Regex;
+use std::path::PathBuf;
+use tokio::fs::File;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
+use tokio::net::TcpStream;
 
 async fn escape_ignores(mut ignore_values: Vec<&String>) -> Vec<String> {
     let mut new_values: Vec<String> = Vec::new();
     for ele in ignore_values.iter_mut() {
-        let mut n = ele.replace("\\n", "\n");
-        n = n.replace("\\r", "\r");
-        n = n.replace("\\t", "\t");
-        n = n.replace("\\'", "\'");
-        new_values.push(n);
+        new_values.push(escape_ignore(ele.to_string()));
     }
     return new_values;
+}
+
+async fn escape_regex_ignores(mut ignore_values: Vec<&String>) -> Vec<Regex> {
+    let mut new_values: Vec<Regex> = Vec::new();
+    for ele in ignore_values.iter_mut() {
+        new_values.push(Regex::new(&escape_ignore(ele.to_string())).unwrap());
+    }
+    return new_values;
+}
+
+fn escape_ignore(s: String) -> String {
+    let mut n = s.replace("\\n", "\n");
+    n = n.replace("\\r", "\r");
+    n = n.replace("\\t", "\t");
+    n = n.replace("\\'", "\'");
+    return n;
 }
 
 async fn scan_addr(
@@ -29,7 +42,7 @@ async fn scan_addr(
     fuzz_data: String,
     new_lines: bool,
     retries: u32,
-    timeout: &u32
+    timeout: &u32,
 ) -> Result<(String, String), tokio::io::Error> {
     let mut err: tokio::io::Error = tokio::io::Error::new(std::io::ErrorKind::Other, "");
     for _ in 0..retries {
@@ -47,21 +60,24 @@ async fn scan_addr(
             }
         };
         let mut buf = vec![0u8; 1024];
-        match tokio::time::timeout(std::time::Duration::from_millis(*timeout as u64), stream.read(&mut buf)).await {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(*timeout as u64),
+            stream.read(&mut buf),
+        )
+        .await
+        {
             Ok(n) => {
                 // stream.close().await;
                 if n.is_err() {
                     err = n.err().unwrap();
-                }
-                else {
+                } else {
                     let val = n.ok().unwrap();
-                    return Ok((fuzz_data, String::from_utf8_lossy(&buf[..val]).to_string()))
+                    return Ok((fuzz_data, String::from_utf8_lossy(&buf[..val]).to_string()));
                 }
             }
             Err(e) => {
                 err = e.into();
             }
-
         };
         // match stream.read(&mut buf).await {
         //     Ok(n) => {
@@ -82,33 +98,39 @@ async fn fuzz(
     batch_size: &u16,
     new_lines: bool,
     ignore_values: Vec<String>,
-    timeout: &u32
+    ignore_regex_values: Vec<Regex>,
+    timeout: &u32,
 ) {
-    let wordlist_info = get_wordlist_info(wordlist).await.expect("error getting wordlist info");
+    let wordlist_info = get_wordlist_info(wordlist)
+        .await
+        .expect("error getting wordlist info");
     let count_lines = wordlist_info.0;
     let max_length = wordlist_info.1;
     let pb = ProgressBar::new(count_lines);
     let sock_addr: &str = &(target.to_string() + ":" + &port.to_string());
     let mut timeouts: u64 = 0;
-    
+
     let mut lines = BufReader::new(File::open(wordlist).await.unwrap()).lines();
     let mut async_futures = FuturesUnordered::new();
     let mut done: i64 = 0;
 
     pb.println(format!("Target          : {}", sock_addr.green().yellow()));
-    pb.println(format!("Wordlist Size   : {}", count_lines.to_string().yellow()));
-    pb.println(format!("Batch Size      : {}", batch_size.to_string().yellow()));
-    pb.println(format!("Timeout         : {}ms\n\n", timeout.to_string().yellow()));
+    pb.println(format!(
+        "Wordlist Size   : {}",
+        count_lines.to_string().yellow()
+    ));
+    pb.println(format!(
+        "Batch Size      : {}",
+        batch_size.to_string().yellow()
+    ));
+    pb.println(format!(
+        "Timeout         : {}ms\n\n",
+        timeout.to_string().yellow()
+    ));
 
     for _ in 0..*batch_size {
         if let Some(line) = lines.next_line().await.unwrap() {
-            let s = scan_addr(
-                sock_addr,
-                line,
-                new_lines,
-                3,
-                timeout
-            );
+            let s = scan_addr(sock_addr, line, new_lines, 3, timeout);
             async_futures.push(s);
         } else {
             break;
@@ -117,15 +139,15 @@ async fn fuzz(
 
     while let Some(result) = async_futures.next().await {
         if let Some(line) = lines.next_line().await.unwrap() {
-            
             async_futures.push(scan_addr(sock_addr, line, new_lines, 3, timeout));
         }
         match result {
-            
             Ok(response) => {
                 done = done + 1;
                 pb.inc(1);
-                if !ignore_values.iter().any(|s| s.eq(&response.1)) {
+                if !ignore_values.iter().any(|s| s.eq(&response.1))
+                    && !ignore_regex_values.iter().any(|r| r.is_match(&response.1))
+                {
                     let payload_string = format!("Payload:[{}]", response.0.green());
                     let mut l = max_length as i64;
                     if l > 40 {
@@ -136,7 +158,13 @@ async fn fuzz(
                         filler_count = 0;
                     }
                     let filler_string = " ".repeat(filler_count as usize);
-                    pb.println(format!("[{}]: {}{}Response: [{}]","FOUND!".green(),escape_for_print(payload_string), filler_string, escape_for_print(response.1).blue()));
+                    pb.println(format!(
+                        "[{}]: {}{}Response: [{}]",
+                        "FOUND!".green(),
+                        escape_for_print(payload_string),
+                        filler_string,
+                        escape_for_print(response.1).blue()
+                    ));
                 }
             }
             Err(e) => {
@@ -145,11 +173,10 @@ async fn fuzz(
                 if e.kind().eq(&tokio::io::ErrorKind::TimedOut) {
                     timeouts = timeouts + 1;
                     // pb.println(format!("[{}] Payload: [{}]","TIMEOUT".bright_yellow(), e.to_string()));
-                }else {
-                    pb.println(format!("[{}] Payload: [{}]","ERROR".red(), e.to_string()));
+                } else {
+                    pb.println(format!("[{}] Payload: [{}]", "ERROR".red(), e.to_string()));
                     pb.println(format!("{}","Maybe the server cannot handle this amount of requests. Try with smaller batch size --batch-size SIZE".red()));
                 }
-                
             }
         }
     }
@@ -157,7 +184,7 @@ async fn fuzz(
     println!("\n\n[{}]", "DONE!".bright_green());
 }
 
-async fn get_wordlist_info(file: &str) -> std::io::Result<(u64,u64)> {
+async fn get_wordlist_info(file: &str) -> std::io::Result<(u64, u64)> {
     let mut count = 0u64;
     let mut max_length = 0u64;
     let mut lines = BufReader::new(File::open(file).await?).lines();
@@ -195,7 +222,7 @@ Blazing Fast Basic Port Fuzzer"#;
     cmd = cmd.arg(
         arg!(-p --port <PORT> "The port to fuzz")
             .required(true)
-            .value_parser(value_parser!(u16))
+            .value_parser(value_parser!(u16)),
     );
     cmd = cmd.arg(
         Arg::new("batch-size")
@@ -204,7 +231,7 @@ Blazing Fast Basic Port Fuzzer"#;
             .help("Request Batch size")
             .value_name("SIZE")
             .default_value("1000")
-            .value_parser(value_parser!(u16))
+            .value_parser(value_parser!(u16)),
     );
 
     cmd = cmd.arg(
@@ -214,9 +241,9 @@ Blazing Fast Basic Port Fuzzer"#;
             .help("How long to wait for responses in milliseconds")
             .value_name("MS")
             .default_value("250")
-            .value_parser(value_parser!(u32))
+            .value_parser(value_parser!(u32)),
     );
-    
+
     // cmd = cmd.arg(arg!(-U --udp "Fuzz over UDP").action(ArgAction::SetTrue));
     cmd = cmd.arg(
         Arg::new("ignore")
@@ -224,6 +251,14 @@ Blazing Fast Basic Port Fuzzer"#;
             .short('i')
             .help("Ignores responses with the specific value")
             .value_name("RESPONSE")
+            .action(ArgAction::Append),
+    );
+    cmd = cmd.arg(
+        Arg::new("ignore-regex")
+            .long("ignore-regex")
+            .short('I')
+            .help("Ignores responses matching the specific regex")
+            .value_name("REGEX")
             .action(ArgAction::Append),
     );
     // cmd = cmd.arg(arg!(-i --ignore <RESPONSE> "Ignores responses with the specific value").action(ArgAction::Append));
@@ -245,9 +280,16 @@ Blazing Fast Basic Port Fuzzer"#;
     // let udp = matches.get_flag("udp");
     let no_new_lines = matches.get_flag("no-newline");
     let ignore_matches = matches.get_many::<String>("ignore");
+    let ignore_regex_matches = matches.get_many::<String>("ignore-regex");
     let mut ignore_values: Vec<String> = Vec::new();
     if !ignore_matches.is_none() {
         ignore_values = escape_ignores(ignore_matches.unwrap().collect::<Vec<_>>()).await;
+    }
+
+    let mut ignore_regex_values: Vec<Regex> = Vec::new();
+    if !ignore_regex_matches.is_none() {
+        ignore_regex_values =
+            escape_regex_ignores(ignore_regex_matches.unwrap().collect::<Vec<_>>()).await;
     }
     println!("{}\n", banner.blue());
     fuzz(
@@ -257,6 +299,8 @@ Blazing Fast Basic Port Fuzzer"#;
         batch_size,
         !no_new_lines,
         ignore_values,
-        timeout
-    ).await;
+        ignore_regex_values,
+        timeout,
+    )
+    .await;
 }
