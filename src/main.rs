@@ -136,7 +136,7 @@ async fn fuzz(
                         filler_count = 0;
                     }
                     let filler_string = " ".repeat(filler_count as usize);
-                    pb.println(format!("[{}]: {}{}Response: [{}]","FOUND!".green(),payload_string, filler_string, response.1.replace("\n", "\\n").blue()));
+                    pb.println(format!("[{}]: {}{}Response: [{}]","FOUND!".green(),escape_for_print(payload_string), filler_string, escape_for_print(response.1).blue()));
                 }
             }
             Err(e) => {
@@ -170,6 +170,10 @@ async fn get_wordlist_info(file: &str) -> std::io::Result<(u64,u64)> {
     }
     // file.seek(SeekFrom::Start(0)).await?;
     Ok((count, max_length))
+}
+
+fn escape_for_print(s: String) -> String {
+    return s.replace("\n", "\\n").replace("\r", "\\r");
 }
 
 #[tokio::main]
