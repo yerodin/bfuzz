@@ -1,4 +1,5 @@
 extern crate clap;
+use clap::ValueHint;
 use clap::{arg, value_parser, Arg, ArgAction};
 use colored::Colorize;
 use futures::stream::FuturesUnordered;
@@ -242,9 +243,10 @@ async fn main() {
 |____/ |_|  |____/(_____|_____)
 Blazing Fast Basic Port Fuzzer"#;
     let mut cmd = clap::Command::new("bfuzz").bin_name("bfuzz");
+    
     cmd = cmd.arg(
         arg!(-w --wordlist <WORDLIST> "Specify the wordlist")
-            .required(true)
+            .required(true).value_hint(ValueHint::FilePath)
             .value_parser(value_parser!(PathBuf)),
     );
     cmd = cmd.arg(arg!(-t --target <TARGET> "The host to fuzz").required(true));
