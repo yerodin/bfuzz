@@ -93,7 +93,7 @@ async fn scan_addr(
                         if val == 0 {
                             break;
                         } else {
-                            received.extend_from_slice(&buf);
+                            received.extend_from_slice(&buf[0..val]);
                         }
                     }
                 }
