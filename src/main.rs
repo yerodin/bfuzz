@@ -74,27 +74,43 @@ async fn scan_addr(
                 continue;
             }
         };
-        let mut buf = vec![0u8; 1024];
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(*timeout as u64),
-            stream.read(&mut buf),
-        )
-        .await
-        {
-            Ok(n) => {
-                // stream.close().await;
-                if n.is_err() {
-                    err = n.err().unwrap();
-                } else {
-                    let val = n.ok().unwrap();
-                    return Ok((fuzz_data, String::from_utf8_lossy(&buf[..val]).to_string()));
+        let mut received = Vec::new();
+        let mut buf = [0; 4096];
+        let mut timedout = false;
+        loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(*timeout as u64),
+                stream.read(&mut buf),
+            )
+            .await
+            {
+                Ok(n) => {
+                    // stream.close().await;
+                    if n.is_err() {
+                        err = n.err().unwrap();
+                    } else {
+                        let val = n.ok().unwrap();
+                        if val == 0 {
+                            break;
+                        }else {
+                            received.extend_from_slice(&buf);
+                        }
+                    }
                 }
-            }
-            Err(e) => {
-                err = e.into();
-                sleep(Duration::from_millis(100)).await;
-            }
-        };
+                Err(e) => {
+                    err = e.into();
+                    sleep(Duration::from_millis(100)).await;
+                    timedout = true;
+                    break;
+                }
+            };
+        }
+        if timedout {
+            continue;
+        }
+        return Ok((fuzz_data, String::from_utf8(received).unwrap().to_string()));
+
+        
         // match stream.read(&mut buf).await {
         //     Ok(n) => {
         //         stream.close().await;
