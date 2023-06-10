@@ -8,6 +8,9 @@ use indicatif::MultiProgress;
 use indicatif::ProgressBar;
 use indicatif::ProgressStyle;
 use regex::Regex;
+use std::error::Error;
+use std::fmt;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::AsyncBufReadExt;
@@ -17,6 +20,38 @@ use tokio::io::BufReader;
 use tokio::net::TcpStream;
 use tokio::time::sleep;
 use tokio::time::Duration;
+
+#[derive(Debug)]
+struct ScanError {
+    kind: ErrorKind,
+    payload: String,
+    message: String,
+}
+
+impl ScanError {
+    fn new(k: ErrorKind, msg: &str, payload: &str) -> ScanError {
+        ScanError {
+            kind: k,
+            message: msg.to_string(),
+            payload: payload.to_string(),
+        }
+    }
+    fn kind(&self) -> &ErrorKind {
+        &self.kind
+    }
+}
+
+impl fmt::Display for ScanError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl Error for ScanError {
+    fn description(&self) -> &str {
+        &self.message
+    }
+}
 
 async fn escape_ignores(mut ignore_values: Vec<&String>) -> Vec<String> {
     let mut new_values: Vec<String> = Vec::new();
@@ -48,8 +83,8 @@ async fn scan_addr(
     new_lines: bool,
     retries: u32,
     timeout: &u32,
-) -> Result<(String, String), tokio::io::Error> {
-    let mut err: tokio::io::Error = tokio::io::Error::new(std::io::ErrorKind::Other, "");
+) -> Result<(String, String), ScanError> {
+    let mut err: ScanError = ScanError::new(std::io::ErrorKind::Other, "", &fuzz_data);
     for _ in 0..retries {
         let mut stream: TcpStream;
         match TcpStream::connect(addr).await {
@@ -58,7 +93,7 @@ async fn scan_addr(
                 sleep(Duration::from_millis(100)).await;
             }
             Err(e) => {
-                err = e;
+                err = ScanError::new(e.kind(), &e.to_string(), &fuzz_data);
                 continue;
             }
         };
@@ -70,7 +105,7 @@ async fn scan_addr(
         match stream.write_all(data).await {
             Ok(_) => {}
             Err(e) => {
-                err = e;
+                err = ScanError::new(e.kind(), &e.to_string(), &fuzz_data);
                 continue;
             }
         };
@@ -87,7 +122,8 @@ async fn scan_addr(
                 Ok(n) => {
                     // stream.close().await;
                     if n.is_err() {
-                        err = n.err().unwrap();
+                        let e = n.err().unwrap();
+                        err = ScanError::new(e.kind(), &e.to_string(), &fuzz_data);
                     } else {
                         let val = n.ok().unwrap();
                         if val == 0 {
@@ -98,7 +134,7 @@ async fn scan_addr(
                     }
                 }
                 Err(e) => {
-                    err = e.into();
+                    err = ScanError::new(ErrorKind::TimedOut, &e.to_string(), &fuzz_data);
                     sleep(Duration::from_millis(100)).await;
                     timedout = true;
                     break;
@@ -109,7 +145,6 @@ async fn scan_addr(
             continue;
         }
         return Ok((fuzz_data, String::from_utf8(received).unwrap().to_string()));
-
     }
     Err(err)
 }
@@ -186,22 +221,13 @@ async fn fuzz(
                 if !ignore_values.iter().any(|s| s.eq(&response.1))
                     && !ignore_regex_values.iter().any(|r| r.is_match(&response.1))
                 {
-                    let payload_string = format!("Payload:[{}]", response.0.green());
-                    let mut l = max_length as i64;
-                    if l > 40 {
-                        l = 40;
-                    }
-                    let mut filler_count: i64 = l - payload_string.len() as i64;
-                    if filler_count < 0 {
-                        filler_count = 0;
-                    }
-                    let filler_string = " ".repeat(filler_count as usize);
-                    
+                    let output_params = gen_output_params(response.0, &max_length, false).await;
+
                     pb.println(format!(
                         "[{}]    {}{}Response: [{}]",
-                        "!".green(),
-                        escape_for_print(payload_string),
-                        filler_string,
+                        "+".green(),
+                        escape_for_print(output_params.0),
+                        output_params.1,
                         escape_for_print(response.1).blue()
                     ));
                 }
@@ -214,6 +240,14 @@ async fn fuzz(
                     // pb.println(format!("[{}] Payload: [{}]","TIMEOUT".bright_yellow(), e.to_string()));
                 } else {
                     errors = errors + 1;
+                    let output_params = gen_output_params(e.payload, &max_length, true).await;
+                    pb.println(format!(
+                        "[{}]    {}{}Error: [{}]",
+                        "!".red(),
+                        escape_for_print(output_params.0),
+                        output_params.1,
+                        e.message.red()
+                    ));
                     // pb.println(format!("[{}] Payload: [{}]", "ERROR".red(), e.to_string()));
                     // pb.println(format!("{}","Maybe the server cannot handle this amount of requests. Try with smaller batch size --batch-size SIZE".red()));
                 }
@@ -228,7 +262,32 @@ async fn fuzz(
     pb.finish();
     println!("\n ");
     pb.finish_and_clear();
-    println!("{}{}{}", "[".green().on_green(),"DONE!".black().on_green(), "]".green().on_green());
+    println!(
+        "{}{}{}",
+        "[".green().on_green(),
+        "DONE!".black().on_green(),
+        "]".green().on_green()
+    );
+}
+
+async fn gen_output_params(payload: String, max_len: &u64, is_error: bool) -> (String, String) {
+    let p;
+    if is_error {
+        p = payload.red();
+    } else {
+        p = payload.green();
+    }
+    let payload_string = format!("Payload:[{}]", p);
+    let mut l = *max_len as i64;
+    if l > 40 {
+        l = 40;
+    }
+    let mut filler_count: i64 = l - payload_string.len() as i64;
+    if filler_count < 0 {
+        filler_count = 0;
+    }
+    let filler_string = " ".repeat(filler_count as usize);
+    return (payload_string, filler_string);
 }
 
 async fn get_wordlist_info(file: &str) -> std::io::Result<(u64, u64)> {
