@@ -110,14 +110,6 @@ async fn scan_addr(
         }
         return Ok((fuzz_data, String::from_utf8(received).unwrap().to_string()));
 
-        // match stream.read(&mut buf).await {
-        //     Ok(n) => {
-        //         stream.close().await;
-        //         return Ok((fuzz_data, String::from_utf8_lossy(&buf[..n]).to_string()))},
-        //     Err(e) => {
-        //         err = e;
-        //     }
-        // };
     }
     Err(err)
 }
@@ -144,7 +136,7 @@ async fn fuzz(
     let status_style = ProgressStyle::with_template("{msg}")
         .unwrap()
         .tick_chars("-/+\\");
-    let sb = mb.add(ProgressBar::new(count_lines).with_style(status_style));
+    let sb = mb.add(ProgressBar::new(count_lines).with_style(status_style.clone()));
     sb.set_message(format!(
         "Timeouts: {}      Errors: {}",
         "0".yellow(),
@@ -157,7 +149,7 @@ async fn fuzz(
     let mut lines = BufReader::new(File::open(wordlist).await.unwrap()).lines();
     let mut async_futures = FuturesUnordered::new();
     let mut done: i64 = 0;
-    pb.println(format!("Target          : {}", sock_addr.green().yellow()));
+    pb.println(format!("Target          : {}", sock_addr.yellow()));
     pb.println(format!(
         "Wordlist Size   : {}",
         count_lines.to_string().yellow()
@@ -206,8 +198,8 @@ async fn fuzz(
                     let filler_string = " ".repeat(filler_count as usize);
                     
                     pb.println(format!(
-                        "[{}]: {}{}Response: [{}]",
-                        "FOUND!".green(),
+                        "[{}]    {}{}Response: [{}]",
+                        "!".green(),
                         escape_for_print(payload_string),
                         filler_string,
                         escape_for_print(response.1).blue()
@@ -233,7 +225,10 @@ async fn fuzz(
             errors.to_string().red()
         ));
     }
-    println!("\n\n[{}]", "DONE!".bright_green());
+    pb.finish();
+    println!("\n ");
+    pb.finish_and_clear();
+    println!("{}{}{}", "[".green().on_green(),"DONE!".black().on_green(), "]".green().on_green());
 }
 
 async fn get_wordlist_info(file: &str) -> std::io::Result<(u64, u64)> {
@@ -247,7 +242,6 @@ async fn get_wordlist_info(file: &str) -> std::io::Result<(u64, u64)> {
             max_length = max_length + 1;
         }
     }
-    // file.seek(SeekFrom::Start(0)).await?;
     Ok((count, max_length))
 }
 
@@ -262,8 +256,8 @@ async fn main() {
 | |__ _| |__ _   _ _____ _____ 
 |  _ (_   __) | | (___  |___  )
 | |_) )| |  | |_| |/ __/ / __/ 
-|____/ |_|  |____/(_____|_____)
-Blazing Fast Basic Port Fuzzer"#;
+|____/ |_|  |____/(_____|_____)"#;
+    let banner_text = "Blazing Fast Basic Port Fuzzer".on_blue();
     let mut cmd = clap::Command::new("bfuzz").bin_name("bfuzz");
 
     cmd = cmd.arg(
@@ -315,7 +309,6 @@ Blazing Fast Basic Port Fuzzer"#;
             .value_name("REGEX")
             .action(ArgAction::Append),
     );
-    // cmd = cmd.arg(arg!(-i --ignore <RESPONSE> "Ignores responses with the specific value").action(ArgAction::Append));
     cmd = cmd.arg(
         Arg::new("no-newline")
             .long("no-newline")
@@ -345,7 +338,7 @@ Blazing Fast Basic Port Fuzzer"#;
         ignore_regex_values =
             escape_regex_ignores(ignore_regex_matches.unwrap().collect::<Vec<_>>()).await;
     }
-    println!("{}\n", banner.blue());
+    println!("{}\n{}\n", banner.blue(), banner_text);
     fuzz(
         &wordlist,
         target,
