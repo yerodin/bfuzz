@@ -252,7 +252,7 @@ fn escape_for_print(s: String) -> String {
 #[tokio::main]
 async fn main() {
     let banner = r#" _       ___                   
-| |     / __)            v0.1      
+| |     / __)            v0.1.1
 | |__ _| |__ _   _ _____ _____ 
 |  _ (_   __) | | (___  |___  )
 | |_) )| |  | |_| |/ __/ / __/ 
